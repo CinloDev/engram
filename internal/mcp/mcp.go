@@ -190,11 +190,13 @@ var coreTools = []coreToolDesc{
 	{"mem_get_observation", "mem_get_observation — get full untruncated content of a search result by ID"},
 	{"mem_save_prompt", "mem_save_prompt — save user prompt for context"},
 	{"mem_current_project", "mem_current_project — detect current project from cwd (recommended first call)"},
+	{"mem_judge", "mem_judge — record a verdict on a pending memory conflict (judgment_required flow)"},
+	{"mem_compare", "mem_compare — persist a semantic verdict you have already judged externally"},
 }
 
 var deferredTools = []string{
 	"mem_update", "mem_review", "mem_pin", "mem_unpin", "mem_suggest_topic_key",
-	"mem_session_start", "mem_session_end", "mem_doctor", "mem_compare", "mem_capture_passive",
+	"mem_session_start", "mem_session_end", "mem_doctor", "mem_capture_passive",
 	"mem_stats", "mem_delete", "mem_timeline", "mem_merge_projects",
 }
 

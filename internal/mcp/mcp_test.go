@@ -3088,8 +3088,11 @@ func TestBuildServerInstructions_CustomAndConditional(t *testing.T) {
 		}
 		instructions := buildServerInstructions(allowlist)
 
-		if strings.Contains(instructions, "CORE TOOLS") {
-			t.Errorf("CORE TOOLS should be absent when no core tools are registered")
+		if !strings.Contains(instructions, "CORE TOOLS") {
+			t.Errorf("CORE TOOLS should be present when mem_judge (core, eager) is registered")
+		}
+		if !strings.Contains(instructions, "mem_judge — ") {
+			t.Errorf("expected mem_judge in CORE TOOLS when registered")
 		}
 		if strings.Contains(instructions, "DEFERRED TOOLS") {
 			t.Errorf("DEFERRED TOOLS should be absent when no deferred tools are registered")

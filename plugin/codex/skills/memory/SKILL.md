@@ -14,11 +14,11 @@ Core tools are loaded automatically at session start by the UserPromptSubmit hoo
 They are available immediately — no manual ToolSearch needed.
 
 - `mem_save`, `mem_search`, `mem_context`, `mem_session_summary`
-- `mem_get_observation`, `mem_save_prompt`, `mem_current_project`
+- `mem_get_observation`, `mem_save_prompt`, `mem_current_project`, `mem_judge`, `mem_compare`
 
 Deferred tools (use ToolSearch only if needed):
 - `mem_update`, `mem_review`, `mem_pin`, `mem_unpin`, `mem_suggest_topic_key`
-- `mem_session_start`, `mem_session_end`, `mem_doctor`, `mem_judge`, `mem_compare`, `mem_capture_passive`
+- `mem_session_start`, `mem_session_end`, `mem_doctor`, `mem_capture_passive`
 
 **Fallback**: If tools are unexpectedly unavailable, run `engram setup codex`
 again and restart Codex. Setup repairs the durable MCP config and
