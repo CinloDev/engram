@@ -71,6 +71,8 @@ Next session starts → Previous session context is injected automatically
 | `mem_current_project` | Detect project from cwd — never errors, recommended first call |
 | `mem_doctor` | Run read-only operational diagnostics for project detection and store health |
 | `mem_review` | List observations whose `review_after` lifecycle is stale; `mark_reviewed` resets the local review cycle |
+| `mem_pin` | Pin a local observation so it appears before recent memory context; not synced |
+| `mem_unpin` | Remove a local observation pin so normal recency order applies; not synced |
 | `mem_judge` | Record a verdict for a pending memory conflict surfaced by `mem_save` |
 | `mem_compare` | Persist a semantic relation verdict between two existing observations |
 

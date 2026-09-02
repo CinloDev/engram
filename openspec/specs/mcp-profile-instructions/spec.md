@@ -24,6 +24,7 @@ The system MUST ensure that generated instructions across all profile configurat
 - THEN the output MUST include the `## CONFLICT SURFACING` header and judgment instructions.
 
 #### Scenario: Conditional conflict surfacing exclusion
+
 - GIVEN an allowlist missing either `mem_save` or `mem_judge` (such as `ProfileAdmin` or a custom `mem_judge`-only subset)
 - WHEN server instructions are generated
 - THEN the output MUST NOT contain `## CONFLICT SURFACING` or `mem_save`-dependent judgment instructions.
@@ -73,6 +74,6 @@ Plugin hook scripts (`session-start.sh`, `post-compaction.sh`) and memory skills
 All MCP package comments, setup guides, and plugin documentation MUST consistently state that Engram exposes 18 agent tools and 22 total tools across profiles.
 
 #### Scenario: Documentation verification
-- GIVEN project documentation (`docs/AGENT-SETUP.md`, `docs/PLUGINS.md`, `docs/DOCS.md`, and `internal/mcp/mcp.go`)
+- GIVEN project documentation (`docs/AGENT-SETUP.md`, `docs/PLUGINS.md`, `DOCS.md`, and `internal/mcp/mcp.go`)
 - WHEN referencing MCP tool numbers
 - THEN the documentation MUST state 18 agent tools and 22 total tools.
