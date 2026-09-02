@@ -62,7 +62,8 @@ Plugin hook scripts (`session-start.sh`, `post-compaction.sh`) and memory skills
 - GIVEN `plugin/claude-code/scripts/session-start.sh` or `plugin/codex/scripts/session-start.sh`
 - WHEN executed or inspected
 - THEN DEFERRED tools list MUST NOT contain `mem_stats`, `mem_delete`, `mem_timeline`, or `mem_merge_projects`
-- AND DEFERRED tools list MUST include `mem_doctor`, `mem_compare`, and `mem_capture_passive`.
+- AND CORE tools list MUST include `mem_compare`.
+- AND DEFERRED tools list MUST include `mem_doctor` and `mem_capture_passive`.
 
 #### Scenario: Memory skill consistency
 - GIVEN `plugin/claude-code/skills/memory/SKILL.md` or `plugin/codex/skills/memory/SKILL.md`
