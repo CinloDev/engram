@@ -87,6 +87,9 @@ type CandidateOptions struct {
 	// BM25Floor preserves the deprecated legacy minimum-rank behavior. Candidates
 	// below this value are excluded. It cannot be combined with BM25MaxRank.
 	BM25Floor *float64
+	// Query optionally overrides the saved observation title as the candidate
+	// query source. Empty uses the saved title.
+	Query string
 	// SkipInsert controls whether FindCandidates inserts pending relation rows.
 	// When true, candidates are returned but NO rows are written to memory_relations.
 	// Default false preserves the existing behavior (rows are inserted).
@@ -376,7 +379,11 @@ func (s *Store) FindCandidates(savedID int64, opts CandidateOptions) ([]Candidat
 		scope = opts.Scope
 	}
 
-	ftsQuery := sanitizeFTSCandidates(title)
+	queryText := opts.Query
+	if strings.TrimSpace(queryText) == "" {
+		queryText = title
+	}
+	ftsQuery := sanitizeFTSCandidates(queryText)
 	if ftsQuery == "" {
 		return nil, nil
 	}
@@ -591,24 +598,16 @@ func (s *Store) JudgeRelation(p JudgeRelationParams) (*Relation, error) {
 
 	if err := s.withTx(func(tx *sql.Tx) error {
 		// ── Cross-project guard (Phase 2, REQ-003) ─────────────────────────
-		// Derive source and target project for enrollment checks and the guard.
-		// Use the same session-fallback form as JudgeBySemantic so that enrolled
-		// projects whose observations have a blank project column (but whose session
-		// carries the project) are resolved correctly. Missing observation → empty
-		// string (REQ-011 edge) because the LEFT JOIN returns no row.
-		var srcProject, tgtProject string
+		// Derive the source project using the same session fallback as
+		// JudgeBySemantic. A relation's cloud ownership follows its source; a
+		// missing source therefore has no authoritative project for replication.
+		var srcProject string
 		_ = tx.QueryRow(
 			`SELECT coalesce(nullif(o.project,''), s.project, '')
-			   FROM observations o
-			   LEFT JOIN sessions s ON s.id = o.session_id
-			  WHERE o.sync_id = ?`, sourceID,
+				   FROM observations o
+				   LEFT JOIN sessions s ON s.id = o.session_id
+				  WHERE o.sync_id = ?`, sourceID,
 		).Scan(&srcProject)
-		_ = tx.QueryRow(
-			`SELECT coalesce(nullif(o.project,''), s.project, '')
-			   FROM observations o
-			   LEFT JOIN sessions s ON s.id = o.session_id
-			  WHERE o.sync_id = ?`, targetID,
-		).Scan(&tgtProject)
 
 		// Delegate to shared helper; reject cross-project pairs.
 		if err := validateCrossProjectGuard(tx, sourceID, targetID); err != nil {
@@ -644,31 +643,21 @@ func (s *Store) JudgeRelation(p JudgeRelationParams) (*Relation, error) {
 		}
 
 		// ── Enqueue sync mutation when project is enrolled (REQ-001) ───────
-		// Derive project from source observation; empty string if source missing.
-		// (REQ-011: loud failure is the server's job; we enqueue project='' and log.)
-		//
-		// Enrollment check: prefer srcProject; fall back to tgtProject when source
-		// is missing locally (race condition). This ensures enqueue happens with
-		// project='' when source is absent but target's project IS enrolled.
-		enrollCheckProject := srcProject
-		if enrollCheckProject == "" {
-			enrollCheckProject = tgtProject
+		// Never invent cloud ownership from the target: source ownership is the
+		// relation's authoritative project. Preserve the local judgment, but leave
+		// it local-only until the source can provide a project.
+		if srcProject == "" {
+			log.Printf("[store] WARNING: JudgeRelation kept relation %s local-only; source observation project is unavailable, so no cloud mutation was enqueued", p.JudgmentID)
+			return nil
 		}
 		var enrolled int
 		if err := tx.QueryRow(
-			`SELECT 1 FROM sync_enrolled_projects WHERE project = ? LIMIT 1`, enrollCheckProject,
+			`SELECT 1 FROM sync_enrolled_projects WHERE project = ? LIMIT 1`, srcProject,
 		).Scan(&enrolled); err != nil && err != sql.ErrNoRows {
 			return fmt.Errorf("JudgeRelation: check enrollment: %w", err)
 		}
 		if enrolled == 0 {
 			return nil // not enrolled — no mutation enqueued
-		}
-
-		// REQ-011: log at WARNING level when source observation is missing locally
-		// (project='' race condition). The server will reject with 400; this log
-		// is the local breadcrumb so the gap is not silently swallowed.
-		if srcProject == "" {
-			log.Printf("[store] WARNING: JudgeRelation enqueueing relation %s with project='' (source observation missing locally); server will reject", p.JudgmentID)
 		}
 
 		// Read the full updated row to build the payload.
@@ -1318,6 +1307,14 @@ func (s *Store) GetRelationStats(project string) (RelationStats, error) {
 // Returns a ScanResult with counts, a continuation cursor when another page
 // remains, and whether an insert or semantic cap was hit.
 func (s *Store) ScanProject(opts ScanOptions) (ScanResult, error) {
+	return s.scanProject(opts, false)
+}
+
+func (s *Store) ScanAllProjects(opts ScanOptions) (ScanResult, error) {
+	return s.scanProject(opts, true)
+}
+
+func (s *Store) scanProject(opts ScanOptions, allProjects bool) (ScanResult, error) {
 	limit := opts.Limit
 	if limit == 0 {
 		limit = DefaultScanLimit
@@ -1365,10 +1362,13 @@ func (s *Store) ScanProject(opts ScanOptions) (ScanResult, error) {
 	obsQuery := `
 		SELECT id, ifnull(sync_id,''), scope
 		FROM observations
-		WHERE ifnull(project,'') = ?
-		  AND deleted_at IS NULL
+		WHERE deleted_at IS NULL
 	`
-	obsArgs := []any{opts.Project}
+	obsArgs := []any{}
+	if !allProjects {
+		obsQuery += ` AND ifnull(project,'') = ?`
+		obsArgs = append(obsArgs, opts.Project)
+	}
 	if !opts.Since.IsZero() {
 		obsQuery += ` AND created_at >= ?`
 		obsArgs = append(obsArgs, opts.Since.UTC().Format("2006-01-02T15:04:05Z"))
@@ -1423,8 +1423,12 @@ scan:
 		result.RankedQueries++
 
 		// Find candidates without inserting (SkipInsert=true per design §5).
+		candidateProject := opts.Project
+		if allProjects {
+			candidateProject = ""
+		}
 		candidates, err := s.FindCandidates(obs.id, CandidateOptions{
-			Project:    opts.Project,
+			Project:    candidateProject,
 			Scope:      obs.scope,
 			Limit:      10,
 			SkipInsert: true,
