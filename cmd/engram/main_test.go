@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/mcp"
-	"github.com/Gentleman-Programming/engram/internal/obsidian"
-	"github.com/Gentleman-Programming/engram/internal/project"
-	"github.com/Gentleman-Programming/engram/internal/setup"
-	"github.com/Gentleman-Programming/engram/internal/store"
-	engramsync "github.com/Gentleman-Programming/engram/internal/sync"
-	versioncheck "github.com/Gentleman-Programming/engram/internal/version"
+	"github.com/Gentleman-Programming/engram/v2/internal/mcp"
+	"github.com/Gentleman-Programming/engram/v2/internal/obsidian"
+	"github.com/Gentleman-Programming/engram/v2/internal/project"
+	"github.com/Gentleman-Programming/engram/v2/internal/setup"
+	"github.com/Gentleman-Programming/engram/v2/internal/store"
+	engramsync "github.com/Gentleman-Programming/engram/v2/internal/sync"
+	versioncheck "github.com/Gentleman-Programming/engram/v2/internal/version"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
@@ -76,44 +78,135 @@ func captureOutput(t *testing.T, fn func()) (stdout string, stderr string) {
 	}
 	errR, errW, err := os.Pipe()
 	if err != nil {
+		_ = outR.Close()
+		_ = outW.Close()
 		t.Fatalf("stderr pipe: %v", err)
 	}
+
+	type captureResult struct {
+		output []byte
+		err    error
+	}
+	drain := func(r *os.File) <-chan captureResult {
+		done := make(chan captureResult, 1)
+		go func() {
+			output, err := io.ReadAll(r)
+			done <- captureResult{output: output, err: err}
+		}()
+		return done
+	}
+	outDone := drain(outR)
+	errDone := drain(errR)
 
 	os.Stdout = outW
 	os.Stderr = errW
 
-	type capturedOutput struct {
-		bytes []byte
-		err   error
-	}
-	outDone := make(chan capturedOutput, 1)
-	errDone := make(chan capturedOutput, 1)
-	go func() {
-		bytes, err := io.ReadAll(outR)
-		outDone <- capturedOutput{bytes: bytes, err: err}
-	}()
-	go func() {
-		bytes, err := io.ReadAll(errR)
-		errDone <- capturedOutput{bytes: bytes, err: err}
+	defer func() {
+		os.Stdout = oldOut
+		os.Stderr = oldErr
+		_ = outW.Close()
+		_ = errW.Close()
+
+		outResult := <-outDone
+		errResult := <-errDone
+		_ = outR.Close()
+		_ = errR.Close()
+		if outResult.err != nil {
+			t.Fatalf("read stdout: %v", outResult.err)
+		}
+		if errResult.err != nil {
+			t.Fatalf("read stderr: %v", errResult.err)
+		}
+		stdout = string(outResult.output)
+		stderr = string(errResult.output)
 	}()
 
 	fn()
+	return stdout, stderr
+}
 
-	_ = outW.Close()
-	_ = errW.Close()
-	os.Stdout = oldOut
-	os.Stderr = oldErr
+func TestCaptureOutputRestoresStreams(t *testing.T) {
+	t.Run("after normal return", func(t *testing.T) {
+		originalStdout := os.Stdout
+		originalStderr := os.Stderr
 
-	out := <-outDone
-	if out.err != nil {
-		t.Fatalf("read stdout: %v", out.err)
+		captureOutput(t, func() {})
+
+		if os.Stdout != originalStdout {
+			t.Fatal("stdout was not restored")
+		}
+		if os.Stderr != originalStderr {
+			t.Fatal("stderr was not restored")
+		}
+	})
+
+	t.Run("after panic", func(t *testing.T) {
+		originalStdout := os.Stdout
+		originalStderr := os.Stderr
+		const wantPanic = "capture output panic"
+
+		var recovered any
+		func() {
+			defer func() {
+				recovered = recover()
+			}()
+			captureOutput(t, func() {
+				panic(wantPanic)
+			})
+		}()
+
+		if recovered != wantPanic {
+			t.Fatalf("recovered panic = %v, want %q", recovered, wantPanic)
+		}
+		if os.Stdout != originalStdout {
+			t.Fatal("stdout was not restored")
+		}
+		if os.Stderr != originalStderr {
+			t.Fatal("stderr was not restored")
+		}
+	})
+}
+
+func TestLargeStdoutAndStderrAreCapturedCompletely(t *testing.T) {
+	const helperEnv = "ENGRAM_TEST_CAPTURE_OUTPUT_LARGE_STREAMS_HELPER"
+	const payloadSize = 256 * 1024
+
+	if os.Getenv(helperEnv) == "1" {
+		stdoutPayload := strings.Repeat("o", payloadSize)
+		stderrPayload := strings.Repeat("e", payloadSize)
+		stdout, stderr := captureOutput(t, func() {
+			if _, err := io.WriteString(os.Stdout, stdoutPayload); err != nil {
+				t.Fatalf("write stdout: %v", err)
+			}
+			if _, err := io.WriteString(os.Stderr, stderrPayload); err != nil {
+				t.Fatalf("write stderr: %v", err)
+			}
+		})
+		if stdout != stdoutPayload {
+			t.Fatalf("stdout capture length = %d, want %d", len(stdout), len(stdoutPayload))
+		}
+		if stderr != stderrPayload {
+			t.Fatalf("stderr capture length = %d, want %d", len(stderr), len(stderrPayload))
+		}
+		return
 	}
-	errOut := <-errDone
-	if errOut.err != nil {
-		t.Fatalf("read stderr: %v", errOut.err)
-	}
 
-	return string(out.bytes), string(errOut.bytes)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLargeStdoutAndStderrAreCapturedCompletely$", "-test.count=1")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	const maxDiagnosticOutput = 4096
+	diagnostic := string(output)
+	if len(diagnostic) > maxDiagnosticOutput {
+		diagnostic = diagnostic[:maxDiagnosticOutput] + "\n... subprocess output truncated"
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("captureOutput helper timed out after 10s; subprocess output:\n%s", diagnostic)
+	}
+	if err != nil {
+		t.Fatalf("captureOutput helper failed: %v\nsubprocess output:\n%s", err, diagnostic)
+	}
 }
 
 func TestCaptureOutputDrainsLargeStdoutAndStderrConcurrently(t *testing.T) {
@@ -247,6 +340,12 @@ func TestPrintUsage(t *testing.T) {
 }
 
 func TestPrintPostInstall(t *testing.T) {
+	const (
+		mcpConfiguredMessage = "Configuration written: the OpenCode plugin and Engram MCP registration."
+		mcpManualMessage     = "Plugin written, but Engram MCP registration needs the manual configuration shown above."
+		toolGuidance         = "confirm it can use an `engram_mem_*` tool before relying on Engram."
+	)
+
 	tests := []struct {
 		name       string
 		result     *setup.Result
@@ -255,15 +354,27 @@ func TestPrintPostInstall(t *testing.T) {
 	}{
 		{
 			name:       "opencode with subagent monitor enabled",
-			result:     &setup.Result{Agent: "opencode", TUIPluginEnabled: true},
-			expects:    []string{"Restart OpenCode", "opencode-subagent-statusline", "auto-starts"},
-			notExpects: []string{"engram serve &"},
+			result:     &setup.Result{Agent: "opencode", MCPConfigured: true, TUIPluginEnabled: true},
+			expects:    []string{mcpConfiguredMessage, "opencode mcp list", toolGuidance, "cannot verify tool exposure", "opencode-subagent-statusline", "auto-starts"},
+			notExpects: []string{mcpManualMessage, "engram serve &"},
 		},
 		{
-			name:       "opencode with subagent monitor not enabled",
-			result:     &setup.Result{Agent: "opencode", TUIPluginEnabled: false},
-			expects:    []string{"Restart OpenCode", "auto-starts"},
-			notExpects: []string{"opencode-subagent-statusline", "engram serve &"},
+			name:       "opencode with MCP configured and subagent monitor disabled",
+			result:     &setup.Result{Agent: "opencode", MCPConfigured: true, TUIPluginEnabled: false},
+			expects:    []string{mcpConfiguredMessage, "opencode mcp list", toolGuidance, "cannot verify tool exposure", "auto-starts"},
+			notExpects: []string{mcpManualMessage, "opencode-subagent-statusline", "engram serve &"},
+		},
+		{
+			name:       "opencode with incomplete MCP registration and subagent monitor enabled",
+			result:     &setup.Result{Agent: "opencode", MCPConfigured: false, TUIPluginEnabled: true},
+			expects:    []string{mcpManualMessage, "opencode mcp list", toolGuidance, "cannot verify tool exposure", "opencode-subagent-statusline", "auto-starts"},
+			notExpects: []string{mcpConfiguredMessage, "engram serve &"},
+		},
+		{
+			name:       "opencode with incomplete MCP registration",
+			result:     &setup.Result{Agent: "opencode", MCPConfigured: false, TUIPluginEnabled: false},
+			expects:    []string{mcpManualMessage, "opencode mcp list", toolGuidance, "cannot verify tool exposure", "auto-starts"},
+			notExpects: []string{mcpConfiguredMessage, "opencode-subagent-statusline", "engram serve &"},
 		},
 		{
 			name:       "pi",
@@ -697,6 +808,7 @@ func TestCmdTimeline(t *testing.T) {
 	mustSeedObservation(t, cfg, "s-1", "proj", "note", "first", "first content", "project")
 	focusID := mustSeedObservation(t, cfg, "s-1", "proj", "note", "focus", "focus content", "project")
 	mustSeedObservation(t, cfg, "s-1", "proj", "note", "third", "third content", "project")
+	t.Setenv("ENGRAM_PROJECT", "proj")
 
 	withArgs(t, "engram", "timeline", strconv.FormatInt(focusID, 10), "--before", "1", "--after", "1")
 	stdout, stderr := captureOutput(t, func() { cmdTimeline(cfg) })
@@ -744,7 +856,7 @@ func TestCmdContextAndStats(t *testing.T) {
 		t.Fatalf("unexpected populated context output: %q", ctxOut)
 	}
 
-	withArgs(t, "engram", "stats")
+	withArgs(t, "engram", "stats", "--all")
 	statsOut, statsErr := captureOutput(t, func() { cmdStats(cfg) })
 	if statsErr != "" {
 		t.Fatalf("expected no stderr from stats, got: %q", statsErr)
@@ -762,7 +874,7 @@ func TestCmdExportAndImport(t *testing.T) {
 
 	exportPath := filepath.Join(t.TempDir(), "memories.json")
 
-	withArgs(t, "engram", "export", exportPath)
+	withArgs(t, "engram", "export", exportPath, "--all")
 	exportOut, exportErr := captureOutput(t, func() { cmdExport(sourceCfg) })
 	if exportErr != "" {
 		t.Fatalf("expected no stderr from export, got: %q", exportErr)
@@ -778,6 +890,15 @@ func TestCmdExportAndImport(t *testing.T) {
 	}
 	if !strings.Contains(importOut, "Imported from "+exportPath) {
 		t.Fatalf("unexpected import output: %q", importOut)
+	}
+	for _, want := range []string{
+		"  Sessions:",
+		"  Observations: 1 imported, 0 updated, 0 skipped stale",
+		"  Prompts:",
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import output missing %q: %q", want, importOut)
+		}
 	}
 
 	s, err := store.New(targetCfg)
@@ -862,11 +983,35 @@ func TestCmdSyncDefaultProjectNoData(t *testing.T) {
 	}
 }
 
+func TestCmdSyncHonorsProcessProjectOverride(t *testing.T) {
+	workDir := t.TempDir()
+	withCwd(t, workDir)
+	t.Setenv(project.EnvProjectOverride, "override-project")
+
+	cfg := testConfig(t)
+	mustSeedObservation(t, cfg, "override-session", "override-project", "note", "override note", "override content", "project")
+	withArgs(t, "engram", "sync")
+	stdout, stderr := captureOutput(t, func() { cmdSync(cfg) })
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	if !strings.Contains(stdout, `Exporting memories for project "override-project"`) {
+		t.Fatalf("sync did not use process override: %q", stdout)
+	}
+}
+
 func TestMainVersionAndHelpAliases(t *testing.T) {
 	oldVersion := version
 	version = "9.9.9-test"
 	t.Cleanup(func() { version = oldVersion })
-	stubCheckForUpdates(t, versioncheck.CheckResult{Status: versioncheck.StatusUpToDate})
+
+	checks := 0
+	oldCheckForUpdates := checkForUpdates
+	checkForUpdates = func(string) versioncheck.CheckResult {
+		checks++
+		return versioncheck.CheckResult{Status: versioncheck.StatusUpToDate}
+	}
+	t.Cleanup(func() { checkForUpdates = oldCheckForUpdates })
 
 	tests := []struct {
 		name      string
@@ -884,6 +1029,7 @@ func TestMainVersionAndHelpAliases(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			checks = 0
 			withArgs(t, "engram", tc.arg)
 			stdout, stderr := captureOutput(t, func() { main() })
 			if tc.notStderr && stderr != "" {
@@ -892,55 +1038,42 @@ func TestMainVersionAndHelpAliases(t *testing.T) {
 			if !strings.Contains(stdout, tc.contains) {
 				t.Fatalf("stdout %q does not include %q", stdout, tc.contains)
 			}
+			if checks != 0 {
+				t.Fatalf("update checks = %d, want 0", checks)
+			}
 		})
 	}
 }
 
 func TestMainPrintsUpdateFailuresAndUpdates(t *testing.T) {
-	oldVersion := version
-	version = "1.10.7"
-	t.Cleanup(func() { version = oldVersion })
-
 	t.Run("prints check failure", func(t *testing.T) {
-		stubCheckForUpdates(t, versioncheck.CheckResult{
-			Status:  versioncheck.StatusCheckFailed,
-			Message: "Could not check for updates: GitHub took too long to respond.",
+		_, stderr := captureOutput(t, func() {
+			printUpdateCheckResult(versioncheck.CheckResult{
+				Status:  versioncheck.StatusCheckFailed,
+				Message: "Could not check for updates: GitHub took too long to respond.",
+			})
 		})
-		withArgs(t, "engram", "version")
-
-		stdout, stderr := captureOutput(t, func() { main() })
-		if !strings.Contains(stdout, "engram 1.10.7") {
-			t.Fatalf("stdout = %q", stdout)
-		}
 		if !strings.Contains(stderr, "Could not check for updates") {
 			t.Fatalf("stderr = %q", stderr)
 		}
 	})
 
 	t.Run("prints available update", func(t *testing.T) {
-		stubCheckForUpdates(t, versioncheck.CheckResult{
-			Status:  versioncheck.StatusUpdateAvailable,
-			Message: "Update available: 1.10.7 -> 1.10.8",
+		_, stderr := captureOutput(t, func() {
+			printUpdateCheckResult(versioncheck.CheckResult{
+				Status:  versioncheck.StatusUpdateAvailable,
+				Message: "Update available: 1.10.7 -> 1.10.8",
+			})
 		})
-		withArgs(t, "engram", "version")
-
-		stdout, stderr := captureOutput(t, func() { main() })
-		if !strings.Contains(stdout, "engram 1.10.7") {
-			t.Fatalf("stdout = %q", stdout)
-		}
 		if !strings.Contains(stderr, "Update available") {
 			t.Fatalf("stderr = %q", stderr)
 		}
 	})
 
 	t.Run("prints nothing when up to date", func(t *testing.T) {
-		stubCheckForUpdates(t, versioncheck.CheckResult{Status: versioncheck.StatusUpToDate})
-		withArgs(t, "engram", "version")
-
-		stdout, stderr := captureOutput(t, func() { main() })
-		if !strings.Contains(stdout, "engram 1.10.7") {
-			t.Fatalf("stdout = %q", stdout)
-		}
+		_, stderr := captureOutput(t, func() {
+			printUpdateCheckResult(versioncheck.CheckResult{Status: versioncheck.StatusUpToDate})
+		})
 		if stderr != "" {
 			t.Fatalf("stderr = %q, want empty", stderr)
 		}
@@ -1025,6 +1158,210 @@ func TestCmdSearchLocalMode(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "Found") && !strings.Contains(stdout, "local-result") {
 		t.Fatalf("expected local search results, got: %q", stdout)
+	}
+}
+
+func TestUsageAdvertisesAllProjectReadSelectors(t *testing.T) {
+	stdout, _ := captureOutput(t, func() { printUsage() })
+	for _, want := range []string{
+		"search <query>     Search memories [--type TYPE] [--project PROJECT|--all]",
+		"timeline <obs_id>  Show chronological context around an observation [--before N] [--after N] [--project PROJECT|--all]",
+		"stats [--project PROJECT|--all]",
+		"export [file] [--project PROJECT|--all]",
+		"obsidian-export [--project PROJECT|--all]",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("usage missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestCmdStatsAndExportProjectScopeSkipGlobalLoads(t *testing.T) {
+	workDir := t.TempDir()
+	withCwd(t, workDir)
+	cfg := testConfig(t)
+	mustSeedObservation(t, cfg, "scoped-load", "alpha", "note", "scoped", "scoped content", "project")
+
+	oldStats := storeStats
+	oldExport := storeExport
+	storeStats = func(*store.Store) (*store.Stats, error) {
+		return nil, errors.New("global stats should not run")
+	}
+	storeExport = func(*store.Store) (*store.ExportData, error) {
+		return nil, errors.New("global export should not run")
+	}
+	t.Cleanup(func() {
+		storeStats = oldStats
+		storeExport = oldExport
+	})
+
+	withArgs(t, "engram", "stats", "--project", "alpha")
+	stdout, stderr := captureOutput(t, func() { cmdStats(cfg) })
+	if stderr != "" || !strings.Contains(stdout, "Observations: 1") {
+		t.Fatalf("project stats must avoid the global loader: stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	path := filepath.Join(workDir, "alpha.json")
+	withArgs(t, "engram", "export", path, "--project", "alpha")
+	_, stderr = captureOutput(t, func() { cmdExport(cfg) })
+	if stderr != "" {
+		t.Fatalf("project export must avoid the global loader: stderr=%q", stderr)
+	}
+}
+
+func TestCmdTimelineStatsAndExportRejectInvalidProjectValues(t *testing.T) {
+	commands := []struct {
+		name string
+		args []string
+		run  func(store.Config)
+	}{
+		{name: "timeline", args: []string{"timeline", "1"}, run: cmdTimeline},
+		{name: "stats", args: []string{"stats"}, run: cmdStats},
+		{name: "export", args: []string{"export", "out.json"}, run: cmdExport},
+	}
+	values := []struct {
+		name string
+		args []string
+	}{
+		{name: "missing", args: []string{"--project"}},
+		{name: "blank", args: []string{"--project", " "}},
+		{name: "flag", args: []string{"--project", "--all"}},
+	}
+	for _, command := range commands {
+		for _, value := range values {
+			t.Run(command.name+"/"+value.name, func(t *testing.T) {
+				stubExitWithPanic(t)
+				args := append([]string{"engram"}, command.args...)
+				args = append(args, value.args...)
+				withArgs(t, args...)
+				_, stderr, recovered := captureOutputAndRecover(t, func() { command.run(testConfig(t)) })
+				if _, ok := recovered.(exitCode); !ok {
+					t.Fatalf("expected invalid --project to exit, got %v", recovered)
+				}
+				if !strings.Contains(stderr, "--project requires a non-empty value") {
+					t.Fatalf("invalid --project error = %q", stderr)
+				}
+			})
+		}
+	}
+}
+
+func TestProjectScopedCLIReadFamiliesUseCurrentAndExplicitAll(t *testing.T) {
+	workDir := t.TempDir()
+	withCwd(t, workDir)
+	t.Setenv("ENGRAM_PROJECT", "alpha")
+	cfg := testConfig(t)
+	alphaID := mustSeedObservation(t, cfg, "scope-alpha", "alpha", "note", "alpha scoped", "shared scoped search", "project")
+	betaID := mustSeedObservation(t, cfg, "scope-beta", "beta", "note", "beta scoped", "shared scoped search", "project")
+
+	withArgs(t, "engram", "search", "shared", "--limit", "10")
+	current, stderr := captureOutput(t, func() { cmdSearch(cfg) })
+	if stderr != "" || !strings.Contains(current, "alpha scoped") || strings.Contains(current, "beta scoped") {
+		t.Fatalf("current search must be alpha-only: stdout=%q stderr=%q", current, stderr)
+	}
+	withArgs(t, "engram", "search", "shared", "--all", "--limit", "10")
+	all, stderr := captureOutput(t, func() { cmdSearch(cfg) })
+	if stderr != "" || !strings.Contains(all, "alpha scoped") || !strings.Contains(all, "beta scoped") {
+		t.Fatalf("explicit all search must include both projects: stdout=%q stderr=%q", all, stderr)
+	}
+
+	withArgs(t, "engram", "timeline", strconv.FormatInt(betaID, 10))
+	stubExitWithPanic(t)
+	_, _, recovered := captureOutputAndRecover(t, func() { cmdTimeline(cfg) })
+	if recovered == nil {
+		t.Fatal("current timeline must reject an observation from another project")
+	}
+	withArgs(t, "engram", "timeline", strconv.FormatInt(betaID, 10), "--all")
+	timeline, stderr := captureOutput(t, func() { cmdTimeline(cfg) })
+	if stderr != "" || !strings.Contains(timeline, "beta scoped") {
+		t.Fatalf("all timeline must include beta observation: stdout=%q stderr=%q", timeline, stderr)
+	}
+
+	withArgs(t, "engram", "stats")
+	stats, stderr := captureOutput(t, func() { cmdStats(cfg) })
+	if stderr != "" || !strings.Contains(stats, "Observations: 1") || strings.Contains(stats, "beta") {
+		t.Fatalf("current stats must be alpha-only: stdout=%q stderr=%q", stats, stderr)
+	}
+	withArgs(t, "engram", "stats", "--all")
+	stats, stderr = captureOutput(t, func() { cmdStats(cfg) })
+	if stderr != "" || !strings.Contains(stats, "Observations: 2") || !strings.Contains(stats, "beta") {
+		t.Fatalf("all stats must include both projects: stdout=%q stderr=%q", stats, stderr)
+	}
+
+	withArgs(t, "engram", "context")
+	contextCurrent, stderr := captureOutput(t, func() { cmdContext(cfg) })
+	if stderr != "" || !strings.Contains(contextCurrent, "alpha scoped") || strings.Contains(contextCurrent, "beta scoped") {
+		t.Fatalf("current context must be alpha-only: stdout=%q stderr=%q", contextCurrent, stderr)
+	}
+	withArgs(t, "engram", "context", "--project", "beta")
+	contextExplicit, stderr := captureOutput(t, func() { cmdContext(cfg) })
+	if stderr != "" || !strings.Contains(contextExplicit, "beta scoped") || strings.Contains(contextExplicit, "alpha scoped") {
+		t.Fatalf("explicit context must be beta-only: stdout=%q stderr=%q", contextExplicit, stderr)
+	}
+	withArgs(t, "engram", "context", "beta")
+	contextLegacy, stderr := captureOutput(t, func() { cmdContext(cfg) })
+	if stderr != "" || !strings.Contains(contextLegacy, "beta scoped") || strings.Contains(contextLegacy, "alpha scoped") {
+		t.Fatalf("legacy positional context must remain beta-only: stdout=%q stderr=%q", contextLegacy, stderr)
+	}
+	withArgs(t, "engram", "context", "--all")
+	contextAll, stderr := captureOutput(t, func() { cmdContext(cfg) })
+	if stderr != "" || !strings.Contains(contextAll, "alpha scoped") || !strings.Contains(contextAll, "beta scoped") {
+		t.Fatalf("all context must include both projects: stdout=%q stderr=%q", contextAll, stderr)
+	}
+
+	currentExport := filepath.Join(workDir, "current.json")
+	withArgs(t, "engram", "export", currentExport)
+	_, stderr = captureOutput(t, func() { cmdExport(cfg) })
+	if stderr != "" {
+		t.Fatalf("current export stderr: %q", stderr)
+	}
+	var currentData store.ExportData
+	bytes, err := os.ReadFile(currentExport)
+	if err != nil || json.Unmarshal(bytes, &currentData) != nil || len(currentData.Observations) != 1 || currentData.Observations[0].ID != alphaID {
+		t.Fatalf("current export must contain only alpha observation: err=%v data=%#v", err, currentData)
+	}
+	allExport := filepath.Join(workDir, "all.json")
+	withArgs(t, "engram", "export", allExport, "--all")
+	_, stderr = captureOutput(t, func() { cmdExport(cfg) })
+	if stderr != "" {
+		t.Fatalf("all export stderr: %q", stderr)
+	}
+	bytes, err = os.ReadFile(allExport)
+	var allData store.ExportData
+	if err != nil || json.Unmarshal(bytes, &allData) != nil || len(allData.Observations) != 2 {
+		t.Fatalf("all export must contain both observations: err=%v data=%#v", err, allData)
+	}
+
+	vault := t.TempDir()
+	withArgs(t, "engram", "obsidian-export", "--vault", vault)
+	_, stderr = captureOutput(t, func() { cmdObsidianExport(cfg) })
+	if stderr != "" {
+		t.Fatalf("current Obsidian export stderr: %q", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "engram", "alpha")); err != nil {
+		t.Fatalf("current Obsidian export missing alpha data: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "engram", "beta")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("current Obsidian export must not write beta data: %v", err)
+	}
+}
+
+func TestCmdContextRejectsConflictingProjectSelectors(t *testing.T) {
+	cfg := testConfig(t)
+	mustSeedObservation(t, cfg, "context-selectors", "alpha", "note", "alpha", "content", "project")
+	stubExitWithPanic(t)
+
+	for _, args := range [][]string{
+		{"engram", "context", "alpha", "--project", "alpha"},
+		{"engram", "context", "--project", "alpha", "--all"},
+		{"engram", "context", "alpha", "beta"},
+		{"engram", "context", "--project", "alpha", "--project", "alpha"},
+	} {
+		withArgs(t, args...)
+		_, stderr, recovered := captureOutputAndRecover(t, func() { cmdContext(cfg) })
+		if recovered == nil || !strings.Contains(stderr, "project selector") {
+			t.Fatalf("args %v must reject conflicting selectors: stderr=%q panic=%v", args, stderr, recovered)
+		}
 	}
 }
 
@@ -1991,16 +2328,18 @@ func TestCmdMCPServesBeforeDeferredEnrolledProjectRepair(t *testing.T) {
 	}
 }
 
-func TestCmdSyncUsesDetectProject(t *testing.T) {
+func TestCmdSyncUsesFullProjectDetection(t *testing.T) {
 	workDir := t.TempDir()
 	withCwd(t, workDir)
 
 	cfg := testConfig(t)
 
-	// Stub detectProject to verify it's called instead of filepath.Base
-	old := detectProject
-	t.Cleanup(func() { detectProject = old })
-	detectProject = func(dir string) string { return "git-detected-project" }
+	// Stub full detection so sync preserves fail-closed automatic Git detection.
+	old := detectProjectFull
+	t.Cleanup(func() { detectProjectFull = old })
+	detectProjectFull = func(dir string) project.DetectionResult {
+		return project.DetectionResult{Project: "git-detected-project", Source: project.SourceGitRemote, Path: dir}
+	}
 
 	withArgs(t, "engram", "sync")
 	stdout, stderr := captureOutput(t, func() { cmdSync(cfg) })
@@ -2008,7 +2347,62 @@ func TestCmdSyncUsesDetectProject(t *testing.T) {
 		t.Fatalf("expected no stderr, got: %q", stderr)
 	}
 	if !strings.Contains(stdout, "git-detected-project") {
-		t.Fatalf("expected detectProject result in output, got: %q", stdout)
+		t.Fatalf("expected full detection result in output, got: %q", stdout)
+	}
+}
+
+func TestCmdSyncFailsClosedWhenFullProjectDetectionFails(t *testing.T) {
+	workDir := t.TempDir()
+	withCwd(t, workDir)
+	t.Setenv("ENGRAM_PROJECT", "")
+	stubExitWithPanic(t)
+
+	oldDetectProjectFull := detectProjectFull
+	oldSyncExport := syncExport
+	t.Cleanup(func() {
+		detectProjectFull = oldDetectProjectFull
+		syncExport = oldSyncExport
+	})
+
+	for _, tt := range []struct {
+		name   string
+		detect project.DetectionResult
+		want   error
+	}{
+		{
+			name:   "repository binding unavailable",
+			detect: project.DetectionResult{Source: project.SourceGitRoot, Path: workDir, Error: fmt.Errorf("%w: test binding failure", project.ErrRepositoryBinding)},
+			want:   project.ErrRepositoryBinding,
+		},
+		{
+			name:   "invalid project config",
+			detect: project.DetectionResult{Source: project.SourceConfig, Path: workDir, Error: fmt.Errorf("%w: test config failure", project.ErrInvalidConfig)},
+			want:   project.ErrInvalidConfig,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			detectProjectFull = func(string) project.DetectionResult { return tt.detect }
+			exportCalled := false
+			syncExport = func(*engramsync.Syncer, string, string) (*engramsync.SyncResult, error) {
+				exportCalled = true
+				return nil, errors.New("syncExport must not run after project detection failure")
+			}
+
+			withArgs(t, "engram", "sync")
+			stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(testConfig(t)) })
+			if _, ok := recovered.(exitCode); !ok {
+				t.Fatalf("cmdSync recovery = %v, want exit code", recovered)
+			}
+			if !strings.Contains(stderr, tt.want.Error()) {
+				t.Fatalf("stderr %q does not contain detection error %q", stderr, tt.want)
+			}
+			if exportCalled {
+				t.Fatal("cmdSync invoked syncExport after project detection failed")
+			}
+			if strings.Contains(stdout, "Exporting memories") {
+				t.Fatalf("cmdSync emitted export output after project detection failed: %q", stdout)
+			}
+		})
 	}
 }
 
@@ -2066,6 +2460,7 @@ func TestObsidianExportMissingVault(t *testing.T) {
 func TestObsidianExportCallsInjectedExporter(t *testing.T) {
 	cfg := testConfig(t)
 	vaultDir := t.TempDir()
+	mustSeedObservation(t, cfg, "obsidian-eng", "eng", "note", "Known project", "content", "project")
 
 	// Track the ExportConfig passed to the injected constructor
 	var capturedCfg obsidian.ExportConfig
@@ -2105,11 +2500,12 @@ func TestObsidianExportCallsInjectedExporter(t *testing.T) {
 	}
 }
 
-// TestObsidianExportMinimalFlags verifies that only --vault (the required flag)
-// is sufficient — optional flags default to zero values (triangulation case).
+// TestObsidianExportMinimalFlags verifies that --vault uses the current project.
 func TestObsidianExportMinimalFlags(t *testing.T) {
 	cfg := testConfig(t)
 	vaultDir := t.TempDir()
+	mustSeedObservation(t, cfg, "obsidian-default", "default-project", "note", "Known project", "content", "project")
+	t.Setenv("ENGRAM_PROJECT", "default-project")
 
 	var capturedCfg obsidian.ExportConfig
 	oldNew := newObsidianExporter
@@ -2126,9 +2522,8 @@ func TestObsidianExportMinimalFlags(t *testing.T) {
 	if capturedCfg.VaultPath != vaultDir {
 		t.Fatalf("expected VaultPath=%q, got %q", vaultDir, capturedCfg.VaultPath)
 	}
-	// Optional flags should be zero
-	if capturedCfg.Project != "" {
-		t.Fatalf("expected empty Project, got %q", capturedCfg.Project)
+	if capturedCfg.Project != "default-project" {
+		t.Fatalf("expected current project, got %q", capturedCfg.Project)
 	}
 	if capturedCfg.Limit != 0 {
 		t.Fatalf("expected Limit=0, got %d", capturedCfg.Limit)
