@@ -238,7 +238,7 @@ func buildServerInstructions(allowlist map[string]bool) string {
 		b.WriteString("PROACTIVE SAVE RULE: Call mem_save immediately after ANY decision, bug fix, discovery, or convention — not just when asked.\n\n")
 	}
 
-	if shouldRegister("mem_judge", allowlist) {
+	if shouldRegister("mem_save", allowlist) && shouldRegister("mem_judge", allowlist) {
 		b.WriteString("## CONFLICT SURFACING\n\n" +
 			"After mem_save: if judgment_required, iterate candidates[] and call mem_judge\n" +
 			"once per entry using that entry's judgment_id; never reuse the top-level judgment_id.\n" +

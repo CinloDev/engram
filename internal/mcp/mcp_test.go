@@ -2944,7 +2944,7 @@ func TestBuildServerInstructions_NilOrAll(t *testing.T) {
 	// CORE tools
 	coreTools := []string{
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
-		"mem_get_observation", "mem_save_prompt", "mem_current_project",
+		"mem_get_observation", "mem_save_prompt", "mem_current_project", "mem_judge", "mem_compare",
 	}
 	for _, tool := range coreTools {
 		if !strings.Contains(instructions, tool) {
@@ -2955,7 +2955,7 @@ func TestBuildServerInstructions_NilOrAll(t *testing.T) {
 	// DEFERRED tools (both agent and admin)
 	deferredTools := []string{
 		"mem_update", "mem_review", "mem_pin", "mem_unpin", "mem_suggest_topic_key",
-		"mem_session_start", "mem_session_end", "mem_doctor", "mem_compare", "mem_capture_passive",
+		"mem_session_start", "mem_session_end", "mem_doctor", "mem_capture_passive",
 		"mem_stats", "mem_delete", "mem_timeline", "mem_merge_projects",
 	}
 	for _, tool := range deferredTools {
@@ -2979,7 +2979,7 @@ func TestBuildServerInstructions_ProfileAgent(t *testing.T) {
 	// CORE tools should all be present
 	coreTools := []string{
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
-		"mem_get_observation", "mem_save_prompt", "mem_current_project",
+		"mem_get_observation", "mem_save_prompt", "mem_current_project", "mem_judge", "mem_compare",
 	}
 	for _, tool := range coreTools {
 		if !strings.Contains(instructions, tool) {
@@ -2990,7 +2990,7 @@ func TestBuildServerInstructions_ProfileAgent(t *testing.T) {
 	// Agent deferred tools present
 	agentDeferred := []string{
 		"mem_update", "mem_review", "mem_pin", "mem_unpin", "mem_suggest_topic_key",
-		"mem_session_start", "mem_session_end", "mem_doctor", "mem_compare", "mem_capture_passive",
+		"mem_session_start", "mem_session_end", "mem_doctor", "mem_capture_passive",
 	}
 	for _, tool := range agentDeferred {
 		if !strings.Contains(instructions, tool) {
@@ -3100,8 +3100,26 @@ func TestBuildServerInstructions_CustomAndConditional(t *testing.T) {
 		if strings.Contains(instructions, "PROACTIVE SAVE RULE:") {
 			t.Errorf("PROACTIVE SAVE RULE should be absent when mem_save is absent")
 		}
+		if strings.Contains(instructions, "## CONFLICT SURFACING") {
+			t.Errorf("CONFLICT SURFACING should be absent when mem_save is absent")
+		}
+		if strings.Contains(instructions, "mem_save") {
+			t.Errorf("mem_save should not be mentioned when it is not registered")
+		}
+	})
+
+	t.Run("mem_save and mem_judge", func(t *testing.T) {
+		allowlist := map[string]bool{
+			"mem_save":  true,
+			"mem_judge": true,
+		}
+		instructions := buildServerInstructions(allowlist)
+
 		if !strings.Contains(instructions, "## CONFLICT SURFACING") {
-			t.Errorf("CONFLICT SURFACING should be present when mem_judge is registered")
+			t.Errorf("CONFLICT SURFACING should be present when mem_save and mem_judge are registered")
+		}
+		if !strings.Contains(instructions, "After mem_save:") {
+			t.Errorf("conflict guidance should mention mem_save when it is registered")
 		}
 	})
 
@@ -3123,7 +3141,7 @@ func TestCoreToolsAreNotDeferred(t *testing.T) {
 
 	coreTools := []string{
 		"mem_save", "mem_search", "mem_context", "mem_session_summary",
-		"mem_get_observation", "mem_save_prompt",
+		"mem_get_observation", "mem_save_prompt", "mem_judge", "mem_compare",
 	}
 	for _, name := range coreTools {
 		tool := tools[name]

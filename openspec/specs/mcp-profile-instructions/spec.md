@@ -9,8 +9,8 @@ Define the specification for dynamic MCP server instructions generation, profile
 ### Requirement: REQ-MPI-001 Dynamic Instruction Generation & Length Bounds
 
 The system MUST dynamically generate MCP server instructions via `buildServerInstructions(allowlist map[string]bool) string` that list only registered tools.
-The system MUST filter CORE tools (`mem_save`, `mem_search`, `mem_context`, `mem_session_summary`, `mem_get_observation`, `mem_save_prompt`, `mem_current_project`) and DEFERRED tools based on the active allowlist.
-The system MUST include the `## CONFLICT SURFACING` section IF AND ONLY IF `mem_judge` is registered in the allowlist.
+The system MUST filter CORE tools (`mem_save`, `mem_search`, `mem_context`, `mem_session_summary`, `mem_get_observation`, `mem_save_prompt`, `mem_current_project`, `mem_judge`, `mem_compare`) and DEFERRED tools based on the active allowlist.
+The system MUST include the `## CONFLICT SURFACING` section IF AND ONLY IF both `mem_save` and `mem_judge` are registered in the allowlist.
 The system MUST ensure that generated instructions across all profile configurations (`nil`/all, `agent`, `admin`, empty, or custom sets) strictly contain fewer than 2048 UTF-8 runes (`utf8.RuneCountInString(instructions) < 2048`).
 
 #### Scenario: Handshake character bounds validation
@@ -19,14 +19,14 @@ The system MUST ensure that generated instructions across all profile configurat
 - THEN the result length in runes MUST be strictly less than 2048.
 
 #### Scenario: Conditional conflict surfacing inclusion
-- GIVEN an allowlist containing `mem_judge`
+- GIVEN an allowlist containing both `mem_save` and `mem_judge`
 - WHEN server instructions are generated
 - THEN the output MUST include the `## CONFLICT SURFACING` header and judgment instructions.
 
 #### Scenario: Conditional conflict surfacing exclusion
-- GIVEN an allowlist without `mem_judge` (such as `ProfileAdmin` or custom subset omitting `mem_judge`)
+- GIVEN an allowlist missing either `mem_save` or `mem_judge` (such as `ProfileAdmin` or a custom `mem_judge`-only subset)
 - WHEN server instructions are generated
-- THEN the output MUST NOT contain `## CONFLICT SURFACING` or `mem_judge` instructions.
+- THEN the output MUST NOT contain `## CONFLICT SURFACING` or `mem_save`-dependent judgment instructions.
 
 ### Requirement: REQ-MPI-002 Tool Profile Instruction Correctness
 
