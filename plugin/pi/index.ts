@@ -778,7 +778,7 @@ const MEMORY_TOOL_SCHEMAS: Record<string, ReturnType<typeof Type.Object>> = {
     title: optionalString("New title"),
     content: optionalString("New content"),
     type: optionalString("New type/category"),
-    scope: optionalString("New scope"),
+    scope: optionalString("New scope: project, personal, or global"),
     topic_key: optionalString("New topic key"),
   }),
   mem_delete: Type.Object({

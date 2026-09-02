@@ -269,6 +269,33 @@ func TestNewServerRegistersTools(t *testing.T) {
 	}
 }
 
+func TestNewServerScopeDescriptions(t *testing.T) {
+	srv := NewServer(newMCPTestStore(t))
+	for _, tt := range []struct {
+		toolName string
+		want     string
+	}{
+		{"mem_search", "Filter by scope: project, personal, or global. Omit to apply no scope filter."},
+		{"mem_save", "Scope for this observation: project (default), personal, or global"},
+		{"mem_update", "New scope: project, personal, or global"},
+		{"mem_context", "Filter observations by scope: project, personal, or global. Omit to apply no scope filter."},
+	} {
+		t.Run(tt.toolName, func(t *testing.T) {
+			tool := srv.GetTool(tt.toolName)
+			if tool == nil {
+				t.Fatalf("tool %q not registered", tt.toolName)
+			}
+			scope, ok := tool.Tool.InputSchema.Properties["scope"].(map[string]any)
+			if !ok {
+				t.Fatalf("tool %q scope schema = %T; want object", tt.toolName, tool.Tool.InputSchema.Properties["scope"])
+			}
+			if got, _ := scope["description"].(string); got != tt.want {
+				t.Errorf("tool %q scope description = %q; want %q", tt.toolName, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandleMergeProjectsRejectsNonEquivalentSourceWithoutMutation(t *testing.T) {
 	s := newMCPTestStore(t)
 	if err := s.CreateSession("merge-source", "engram-memory", "/tmp/engram-memory"); err != nil {
