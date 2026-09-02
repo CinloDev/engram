@@ -8289,8 +8289,8 @@ func TestHandleSearchGlobalScopeFilter(t *testing.T) {
 			t.Fatalf("unexpected tool error: %s", callResultText(t, res))
 		}
 		text := callResultText(t, res)
-		if !strings.Contains(text, "global scoped note") || !strings.Contains(text, "project scoped note") {
-			t.Errorf("expected both global and project notes in results, got: %s", text)
+		if !strings.Contains(text, "global scoped note") || !strings.Contains(text, "personal scoped note") || !strings.Contains(text, "project scoped note") {
+			t.Errorf("expected global, personal, and project notes in results, got: %s", text)
 		}
 	})
 }
@@ -8316,6 +8316,18 @@ func TestHandleContextGlobalScopeFilter(t *testing.T) {
 	_, err = s.AddObservation(store.AddObservationParams{
 		SessionID: "ctx-global-sess",
 		Type:      "decision",
+		Title:     "ctx personal observation",
+		Content:   "content",
+		Project:   "ctx-proj",
+		Scope:     "personal",
+	})
+	if err != nil {
+		t.Fatalf("add personal observation: %v", err)
+	}
+
+	_, err = s.AddObservation(store.AddObservationParams{
+		SessionID: "ctx-global-sess",
+		Type:      "decision",
 		Title:     "ctx global observation",
 		Content:   "content",
 		Project:   "ctx-proj",
@@ -8327,23 +8339,44 @@ func TestHandleContextGlobalScopeFilter(t *testing.T) {
 
 	h := handleContext(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
 
-	res, err := h(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
-		"project": "ctx-proj",
-		"scope":   "global",
-	}}})
-	if err != nil {
-		t.Fatalf("handleContext error: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("unexpected tool error: %s", callResultText(t, res))
-	}
-	text := callResultText(t, res)
-	if !strings.Contains(text, "ctx global observation") {
-		t.Errorf("expected global observation in context results, got: %s", text)
-	}
-	if strings.Contains(text, "ctx project observation") {
-		t.Errorf("did not expect project observation in global context results, got: %s", text)
-	}
+	t.Run("filter by scope global", func(t *testing.T) {
+		res, err := h(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
+			"project": "ctx-proj",
+			"scope":   "global",
+		}}})
+		if err != nil {
+			t.Fatalf("handleContext error: %v", err)
+		}
+		if res.IsError {
+			t.Fatalf("unexpected tool error: %s", callResultText(t, res))
+		}
+		text := callResultText(t, res)
+		if !strings.Contains(text, "ctx global observation") {
+			t.Errorf("expected global observation in context results, got: %s", text)
+		}
+		if strings.Contains(text, "ctx project observation") {
+			t.Errorf("did not expect project observation in global context results, got: %s", text)
+		}
+		if strings.Contains(text, "ctx personal observation") {
+			t.Errorf("did not expect personal observation in global context results, got: %s", text)
+		}
+	})
+
+	t.Run("no scope filter returns all", func(t *testing.T) {
+		res, err := h(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
+			"project": "ctx-proj",
+		}}})
+		if err != nil {
+			t.Fatalf("handleContext error: %v", err)
+		}
+		if res.IsError {
+			t.Fatalf("unexpected tool error: %s", callResultText(t, res))
+		}
+		text := callResultText(t, res)
+		if !strings.Contains(text, "ctx global observation") || !strings.Contains(text, "ctx personal observation") || !strings.Contains(text, "ctx project observation") {
+			t.Errorf("expected global, personal, and project observations in context results, got: %s", text)
+		}
+	})
 }
 
 func TestHandleUpdateGlobalScope(t *testing.T) {

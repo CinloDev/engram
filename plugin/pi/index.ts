@@ -759,7 +759,7 @@ const MEMORY_TOOL_SCHEMAS: Record<string, ReturnType<typeof Type.Object>> = {
     query: Type.String({ description: "Search query — natural language or keywords" }),
     type: optionalString("Filter by observation type"),
     project: optionalString("Filter by project name"),
-    scope: optionalString("Filter by scope: project, personal, or global"),
+    scope: optionalString("Filter by scope: project, personal, or global. Omit to apply no scope filter."),
     limit: optionalNumber("Max results"),
     all_projects: optionalBoolean("Search across every project; when true project is ignored"),
     match_mode: optionalString("Match mode: all (default) or any for broader recall"),
@@ -800,7 +800,7 @@ const MEMORY_TOOL_SCHEMAS: Record<string, ReturnType<typeof Type.Object>> = {
   }),
   mem_context: Type.Object({
     project: optionalString("Filter by project"),
-    scope: optionalString("Filter observations by scope"),
+    scope: optionalString("Filter observations by scope: project, personal, or global. Omit to apply no scope filter."),
   }),
   mem_stats: Type.Object({
     project: optionalString("Project to echo in UI chrome"),

@@ -266,7 +266,7 @@ func registerTools(srv *server.MCPServer, s *store.Store, cfg MCPConfig, allowli
 					mcp.Description("Search across every project instead of the current one. When true, the project argument is ignored and results may come from any project. Useful for recalling decisions logged elsewhere when you don't know the project key."),
 				),
 				mcp.WithString("scope",
-					mcp.Description("Filter by scope: project (default), personal, or global"),
+					mcp.Description("Filter by scope: project, personal, or global. Omit to apply no scope filter."),
 				),
 				mcp.WithString("match_mode",
 					mcp.Description("Token matching: \"all\" (default — every token must match, FTS5 AND) or \"any\" (any token matches — broader recall for multi-token queries). Any other value returns an error."),
@@ -534,7 +534,7 @@ Examples:
 					mcp.Description("Filter by project (omit for all projects)"),
 				),
 				mcp.WithString("scope",
-					mcp.Description("Filter observations by scope: project (default), personal, or global"),
+					mcp.Description("Filter observations by scope: project, personal, or global. Omit to apply no scope filter."),
 				),
 				// JW7: limit param removed — schema advertised it but handleContext never read it.
 			),
