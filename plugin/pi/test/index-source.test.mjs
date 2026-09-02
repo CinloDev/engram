@@ -334,6 +334,7 @@ test("mem_search exposes and forwards match_mode and all_projects", () => {
 
 test("scope descriptions document values and unfiltered omission", () => {
   assert.match(source, /mem_search: Type\.Object\(\{[\s\S]*scope: optionalString\("Filter by scope: project, personal, or global\. Omit to apply no scope filter\."\)/);
+  assert.match(source, /mem_save: Type\.Object\(\{[\s\S]*scope: optionalString\("Scope: project, personal, or global"\)/);
   assert.match(source, /mem_context: Type\.Object\(\{[\s\S]*scope: optionalString\("Filter observations by scope: project, personal, or global\. Omit to apply no scope filter\."\)/);
   assert.match(source, /mem_update: Type\.Object\(\{[\s\S]*scope: optionalString\("New scope: project, personal, or global"\)/);
 });
